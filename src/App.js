@@ -5,7 +5,7 @@ import ReactQuill from 'react-quill';
 import 'react-quill/dist/quill.snow.css';
 import './quill-gss.css';
 
-// -------------------- Utils: dates --------------------
+/* -------------------- Utils: dates -------------------- */
 const fmtFR = (iso) => {
   if (!iso) return '—';
   const [y, m, d] = iso.split('-');
@@ -30,6 +30,7 @@ const rangeLabelFR = (arr) => {
   if (isContiguous) return `du ${fmtFR(unique[0])} au ${fmtFR(unique[unique.length - 1])}`;
   return unique.map(fmtFR).join(', ');
 };
+
 const normalizeProofs = (arr) =>
   Array.isArray(arr)
     ? arr.map((x) =>
@@ -51,7 +52,7 @@ const dedupeProofs = (arr) => {
   return out;
 };
 
-// -------------------- Quill toolbar (light) --------------------
+/* -------------------- Quill toolbar (light) -------------------- */
 export const quillFormats = [
   'header',
   'bold', 'italic', 'underline', 'strike',
@@ -93,63 +94,164 @@ export const quillModules = {
   },
 };
 
-// -------------------- Quill HTML → plain text for autoTable --------------------
-const quillHtmlToText = (html, doc, maxWidth) => {
-  if (!html) return '—';
+/* -------------------- Quill HTML → plain text pour autoTable -------------------- */
+/* -------------------- Quill HTML → lignes + spans stylés -------------------- */
+/* Retourne: Array<Line>; Line = { indent: number, bullet: string|null, spans: Array<{text, bold, italic, underline, color}> } */
+const quillHtmlToRich = (html) => {
+  if (!html) return [];
+
   const root = document.createElement('div');
   root.innerHTML = html;
 
-  const bulletForLevel = (lvl) => (['•', '○', '▪', '–', '›'][lvl] ?? '•');
-  const wrap = (t) => doc.splitTextToSize(t, maxWidth);
-  const out = [];
+  const lines = [];
+  const pushLine = (indent = 0, bullet = null) => {
+    const L = { indent, bullet, spans: [] };
+    lines.push(L);
+    return L;
+  };
+
+  const pushText = (line, text, style) => {
+    const t = (text || '').replace(/\s+/g, ' ');
+    if (!t.trim()) return;
+    const last = line.spans[line.spans.length - 1];
+    // fusionne avec le span précédent si style identique
+    if (
+      last &&
+      last.bold === style.bold &&
+      last.italic === style.italic &&
+      last.underline === style.underline &&
+      (last.color || '') === (style.color || '')
+    ) {
+      last.text += t;
+    } else {
+      line.spans.push({ text: t, ...style });
+    }
+  };
+
+  const styleFrom = (el, base) => {
+    const s = { ...base };
+    const tag = el.nodeName;
+    if (tag === 'B' || tag === 'STRONG') s.bold = true;
+    if (tag === 'I' || tag === 'EM') s.italic = true;
+    if (tag === 'U') s.underline = true;
+    if (el.style && el.style.color) s.color = el.style.color;
+    // Quill peut mettre la couleur via <span class="ql-color-red">…</span>
+    const colorClass = Array.from(el.classList || []).find(c => c.startsWith('ql-color-'));
+    if (colorClass) s.color = colorClass.replace('ql-color-', '');
+    return s;
+  };
+
+  const walkInline = (node, line, style) => {
+    if (node.nodeType === 3) { // texte
+      pushText(line, node.nodeValue, style);
+      return;
+    }
+    if (node.nodeName === 'BR') { pushText(line, '\n', style); return; }
+    const nextStyle = styleFrom(node, style);
+    Array.from(node.childNodes).forEach(n => walkInline(n, line, nextStyle));
+  };
 
   const liTextOnly = (li) => {
     const clone = li.cloneNode(true);
-    clone.querySelectorAll('ul,ol').forEach((n) => n.remove());
-    return (clone.textContent || '').replace(/\s+/g, ' ').trim();
+    clone.querySelectorAll('ul,ol').forEach(n => n.remove());
+    return clone;
   };
 
-  const walk = (node) => {
-    if (node.nodeType === 3) {
-      const t = node.nodeValue.replace(/\s+/g, ' ').trim();
-      if (t) out.push(...wrap(t));
-      return;
-    }
-    if (node.nodeName === 'BR') { out.push(''); return; }
+  const bulletForLevel = (lvl) => (['•', '–', '›', '•'][lvl] ?? '•');
 
-    if (node.nodeName === 'UL' || node.nodeName === 'OL') {
+  const walkBlock = (node, baseIndent = 0) => {
+    const tag = node.nodeName;
+
+    if (tag === 'UL' || tag === 'OL') {
       Array.from(node.children).forEach((li, i) => {
         if (li.nodeName !== 'LI') return;
-        const cls = Array.from(li.classList).find(c => c.startsWith('ql-indent-'));
-        const level = cls ? Math.max(0, parseInt(cls.split('-').pop(), 10)) : 0;
-        const text = liTextOnly(li);
-        if (!text) return;
-        if (node.nodeName === 'OL') {
-          const line = `${'  '.repeat(level)}${i + 1}. ${text}`;
-          out.push(...wrap(line));
-        } else {
-          const line = `${'  '.repeat(level)}${bulletForLevel(level)} ${text}`;
-          out.push(...wrap(line));
-        }
-        li.querySelectorAll(':scope > ul, :scope > ol').forEach(walk);
+        const indentClass = Array.from(li.classList).find(c => c.startsWith('ql-indent-'));
+        const lvl = indentClass ? Math.max(0, parseInt(indentClass.split('-').pop(), 10)) : 0;
+        const indent = baseIndent + lvl;
+
+        const bullet = (tag === 'OL') ? `${i + 1}.` : bulletForLevel(indent);
+        const line = pushLine(indent, bullet);
+
+        // contenu inline du LI (sans les sous-listes)
+        const only = liTextOnly(li);
+        Array.from(only.childNodes).forEach(n => walkInline(n, line, { bold:false, italic:false, underline:false, color:null }));
+
+        // sous-listes éventuelles
+        li.querySelectorAll(':scope > ul, :scope > ol').forEach(sub => walkBlock(sub, indent + 1));
       });
-      out.push('');
       return;
     }
-    Array.from(node.childNodes).forEach(walk);
+
+    // Paragraphe/Div simple => une ligne
+    if (tag === 'P' || tag === 'DIV') {
+      const line = pushLine(baseIndent, null);
+      Array.from(node.childNodes).forEach(n => walkInline(n, line, { bold:false, italic:false, underline:false, color:null }));
+      return;
+    }
+
+    // autres blocs: descendre
+    Array.from(node.childNodes).forEach(n => walkBlock(n, baseIndent));
   };
 
-  Array.from(root.childNodes).forEach(walk);
-  return out.join('\n');
+  Array.from(root.childNodes).forEach(n => walkBlock(n, 0));
+
+  // nettoie lignes vides successives
+  return lines.filter(L => (L.spans.some(s => s.text.trim()) || L.bullet));
+};
+/* Dessine des lignes riches dans une cellule autoTable */
+const drawRichLines = (doc, cell, lines, opts = {}) => {
+  const fontSize = opts.fontSize ?? 10;
+  const lineGap = opts.lineGap ?? 3.6;     // ~ hauteur de ligne en mm avec FS=10
+  const bulletGap = opts.bulletGap ?? 4;   // espace après puce/numéro
+  const indentStep = opts.indentStep ?? 6; // mm par niveau
+
+  doc.setFontSize(fontSize);
+  let y = cell.y + 2;
+
+  lines.forEach(line => {
+    let x = cell.x + 1 + (line.indent * indentStep);
+
+    // dessine la puce/numéro si présent
+    if (line.bullet) {
+      doc.setFont(undefined, 'normal');
+      doc.setTextColor(20);
+      doc.text(line.bullet, x, y);
+      x += doc.getTextWidth(line.bullet) + bulletGap;
+    }
+
+    // dessine les spans avec style
+    line.spans.forEach(span => {
+      const style =
+        (span.bold ? 'bold' : 'normal') +
+        (span.italic ? 'italic' : '');
+      doc.setFont('times', style || 'normal');
+      if (span.underline) {
+        // jsPDF n'a pas d'underline natif → on trace un petit trait
+        const w = doc.getTextWidth(span.text);
+        doc.setTextColor(span.color || 20);
+        doc.text(span.text, x, y);
+        doc.setDrawColor(span.color ? 0 : 20);
+        doc.setLineWidth(0.2);
+        doc.line(x, y + 0.6, x + w, y + 0.6);
+        x += w;
+      } else {
+        doc.setTextColor(span.color || 20);
+        doc.text(span.text, x, y);
+        x += doc.getTextWidth(span.text);
+      }
+    });
+
+    y += lineGap;
+  });
 };
 
 export default function App() {
-  // -------------------- Header --------------------
+  /* -------------------- Header -------------------- */
   const [headerCode, setHeaderCode] = useState('FO-SI-08');
   const [headerVersion, setHeaderVersion] = useState('2');
   const [headerTitle, setHeaderTitle] = useState('Rapport de contrôle inopiné');
 
-  // -------------------- Form --------------------
+  /* -------------------- Form -------------------- */
   const [client, setClient] = useState('');
   const [sites, setSites] = useState([
     { name: '', points: [{ point: '', nonConformite: '', preuvesText: '', preuvesImages: [], action: '' }] },
@@ -158,15 +260,15 @@ export default function App() {
   const [recommandations, setRecommandations] = useState('');
   const [controleur, setControleur] = useState('');
 
-  // -------------------- Options PDF/UI --------------------
-  const [forcePageBreakBetweenSites, setForcePageBreakBetweenSites] = useState(false);
-  const [minBlockMM, setMinBlockMM] = useState(28);
+  /* -------------------- Options PDF/UI -------------------- */
+  const [forcePageBreakBetweenSites] = useState(false); // conservé pour compatibilité
+  const [minBlockMM] = useState(28);
 
-  // -------------------- Dates --------------------
+  /* -------------------- Dates -------------------- */
   const [datesControle, setDatesControle] = useState([]);
   const [dateInput, setDateInput] = useState('');
 
-  // -------------------- Assets (Logo + BG) --------------------
+  /* -------------------- Assets (Logo + BG) -------------------- */
   const [logoPreviewSrc, setLogoPreviewSrc] = useState('/gss-logo.png');
   const [logoDataUrl, setLogoDataUrl] = useState(null);
   const [logoError, setLogoError] = useState(null);
@@ -222,8 +324,8 @@ export default function App() {
       .catch(() => { setLogoDataUrl(null); setLogoError('Impossible de recharger le logo par défaut.'); });
   };
 
-  // BG watermark (optional)
-  const [bgDataUrl, setBgDataUrl] = useState(null);
+  // Watermark pré-calculée (transparent)
+  const [bgTransparentUrl, setBgTransparentUrl] = useState(null);
   useEffect(() => {
     fetch('/GSSbg.png')
       .then((r) => (r.ok ? r.blob() : Promise.reject()))
@@ -235,51 +337,40 @@ export default function App() {
             fr.readAsDataURL(b);
           })
       )
-      .then((data) => setBgDataUrl(data))
-      .catch(() => setBgDataUrl(null));
+      .then((data) => {
+        const img = new Image();
+        img.src = data;
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          canvas.width = img.width;
+          canvas.height = img.height;
+          const ctx = canvas.getContext('2d');
+          ctx.globalAlpha = 0.06; // opacité
+          ctx.drawImage(img, 0, 0);
+          try {
+            setBgTransparentUrl(canvas.toDataURL('image/png'));
+          } catch {
+            setBgTransparentUrl(null);
+          }
+        };
+      })
+      .catch(() => setBgTransparentUrl(null));
   }, []);
 
-const drawBackground = async (doc) => {
-  if (!bgDataUrl) return;
+  const drawBackground = (doc) => {
+    if (!bgTransparentUrl) return;
+    try {
+      const pageW = doc.internal.pageSize.getWidth();
+      const pageH = doc.internal.pageSize.getHeight();
+      const imgW = pageW * 0.95;
+      const imgH = imgW * 0.5625; // ratio fallback
+      const x = (pageW - imgW) / 2;
+      const y = (pageH - imgH) / 2;
+      doc.addImage(bgTransparentUrl, 'PNG', x, y, imgW, imgH, undefined, 'FAST');
+    } catch { /* ignore */ }
+  };
 
-  try {
-    // Charger l'image dans un <canvas> pour appliquer la transparence
-    const img = new Image();
-    img.src = bgDataUrl;
-    await new Promise((resolve, reject) => {
-      img.onload = resolve;
-      img.onerror = reject;
-    });
-
-    // Créer un canvas temporaire
-    const canvas = document.createElement('canvas');
-    canvas.width = img.width;
-    canvas.height = img.height;
-    const ctx = canvas.getContext('2d');
-
-    // Appliquer une transparence douce (ajuste l’opacité ici)
-    ctx.globalAlpha = 0.05; // 🔹 entre 0.03 et 0.1 selon ton goût
-    ctx.drawImage(img, 0, 0, img.width, img.height);
-    const transparentDataUrl = canvas.toDataURL('image/png');
-
-    // Adapter à la largeur du PDF
-    const pageW = doc.internal.pageSize.getWidth();
-    const pageH = doc.internal.pageSize.getHeight();
-    const aspect = img.width / img.height;
-    const imgW = pageW * 0.95; // 95% de la largeur de page
-    const imgH = imgW / aspect;
-    const x = (pageW - imgW) / 2;
-    const y = (pageH - imgH) / 2;
-
-    // Dessiner le filigrane en arrière-plan
-    doc.addImage(transparentDataUrl, 'PNG', x, y, imgW, imgH, undefined, 'FAST');
-  } catch (err) {
-    console.warn('Erreur de filigrane :', err);
-  }
-};
-
-
-  // -------------------- Site/Points helpers --------------------
+  /* -------------------- Site/Points helpers -------------------- */
   const addSite = () =>
     setSites((s) => [...s, { name: '', points: [{ point: '', nonConformite: '', preuvesText: '', preuvesImages: [], action: '' }] }]);
 
@@ -314,13 +405,6 @@ const drawBackground = async (doc) => {
       n[siteIdx].points = pts;
       return n;
     });
-
-  const normalizeProofs = (arr) =>
-    (Array.isArray(arr)
-      ? arr.map((x) => (typeof x === 'string'
-        ? { src: x, caption: '', pos: 'after' }
-        : { src: x.src, caption: x.caption || '', pos: x.pos === 'before' ? 'before' : 'after' }))
-      : []);
 
   const updatePreuveMeta = (siteIdx, pointIdx, k, key, val) =>
     setSites((s) => {
@@ -361,20 +445,19 @@ const drawBackground = async (doc) => {
       const fails = results.filter(r => r.status === 'rejected').map(r => r.reason?.message || 'Lecture échouée');
       if (fails.length) alert('Certaines lectures ont échoué:\n' + fails.join('\n'));
       if (!urls.length) return;
-     setSites((s) => {
-  const n = [...s];
-  const pts = [...n[siteIdx].points];
-  const p = { ...pts[pointIdx] };
+      setSites((s) => {
+        const n = [...s];
+        const pts = [...n[siteIdx].points];
+        const p = { ...pts[pointIdx] };
 
-  const existing = normalizeProofs(p.preuvesImages);
-  const toAdd = urls.map((src) => ({ src, caption: '', pos: 'after' }));
+        const existing = normalizeProofs(p.preuvesImages);
+        const toAdd = urls.map((src) => ({ src, caption: '', pos: 'after' }));
 
-  p.preuvesImages = dedupeProofs([...existing, ...toAdd]); // <-- dédup ici
-  pts[pointIdx] = p;
-  n[siteIdx].points = pts;
-  return n;
-});
-
+        p.preuvesImages = dedupeProofs([...existing, ...toAdd]);
+        pts[pointIdx] = p;
+        n[siteIdx].points = pts;
+        return n;
+      });
     });
   };
 
@@ -390,7 +473,7 @@ const drawBackground = async (doc) => {
       return n;
     });
 
-  // -------------------- Import/Export JSON --------------------
+  /* -------------------- Import/Export JSON -------------------- */
   const exportJson = () => {
     const data = { headerCode, headerVersion, headerTitle, client, datesControle, sites, constatations, recommandations, controleur, logoDataUrl };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
@@ -413,24 +496,35 @@ const drawBackground = async (doc) => {
         setHeaderTitle(d.headerTitle ?? 'Rapport de contrôle inopiné');
         setClient(d.client ?? '');
         setDatesControle(Array.isArray(d.datesControle) ? d.datesControle : d.dateControle ? [d.dateControle] : []);
-        if (Array.isArray(d.sites)) setSites(d.sites);
-        else if (Array.isArray(d.points)) setSites([{ name: '', points: d.points }]);
-        else if (Array.isArray(d.sites)) {
-  setSites(d.sites.map(site => ({
-    ...site,
-    points: (site.points || []).map(pt => ({
-      ...pt,
-      preuvesImages: dedupeProofs(pt.preuvesImages)
-    }))
-  })));
-} else if (Array.isArray(d.points)) {
-  setSites([{
-    name: '',
-    points: d.points.map(pt => ({ ...pt, preuvesImages: dedupeProofs(pt.preuvesImages) }))
-  }]);
-} else {
-  setSites([{ name: '', points: [{ point: '', nonConformite: '', preuvesText: '', preuvesImages: [], action: '' }] }]);
-}
+        if (Array.isArray(d.sites)) {
+          setSites(
+            d.sites.map((site) => ({
+              name: site?.name || '',
+              points: (site?.points || []).map((pt) => ({
+                point: pt?.point || '',
+                nonConformite: pt?.nonConformite || '',
+                preuvesText: pt?.preuvesText || '',
+                preuvesImages: dedupeProofs(pt?.preuvesImages || []),
+                action: pt?.action || '',
+              })),
+            }))
+          );
+        } else if (Array.isArray(d.points)) {
+          setSites([
+            {
+              name: '',
+              points: d.points.map((pt) => ({
+                point: pt?.point || '',
+                nonConformite: pt?.nonConformite || '',
+                preuvesText: pt?.preuvesText || '',
+                preuvesImages: dedupeProofs(pt?.preuvesImages || []),
+                action: pt?.action || '',
+              })),
+            },
+          ]);
+        } else {
+          setSites([{ name: '', points: [{ point: '', nonConformite: '', preuvesText: '', preuvesImages: [], action: '' }] }]);
+        }
 
         setConstatations(d.constatations ?? '');
         setRecommandations(d.recommandations ?? '');
@@ -441,7 +535,7 @@ const drawBackground = async (doc) => {
     r.readAsText(f);
   };
 
-  // -------------------- PDF helpers --------------------
+  /* -------------------- PDF helpers -------------------- */
   const mm = { left: 15, right: 15, top: 18, bottom: 18 };
   const CONTENT_START_Y = 50;
 
@@ -451,7 +545,7 @@ const drawBackground = async (doc) => {
     doc.setLineWidth(1.2);
     doc.line(mm.left, 10, pageW - mm.right, 10);
     doc.line(mm.left, 24, pageW - mm.right, 24);
-    if (logoDataUrl) { try { doc.addImage(logoDataUrl, undefined, mm.left, 11, 22, 10, undefined, 'FAST'); } catch {} }
+    if (logoDataUrl) { try { doc.addImage(logoDataUrl, undefined, mm.left, 11, 22, 10, undefined, 'FAST'); } catch { /* ignore */ } }
     const rx = pageW - mm.right;
     doc.setFont('times', 'bold');
     doc.setFontSize(10);
@@ -504,25 +598,52 @@ const drawBackground = async (doc) => {
     return y + boxH + 2;
   };
 
-  // Block that converts Quill HTML to text and renders with autoTable (stable)
-  const addSectionBlock = (doc, title, html, yStart) => {
-    let y = drawSectionTitle(doc, title, yStart);
-    const pageW = doc.internal.pageSize.getWidth();
-    const text = quillHtmlToText(html, doc, pageW - mm.left - mm.right);
-    autoTable(doc, {
-      startY: y + 1,
-      margin: { top: CONTENT_START_Y, left: mm.left, right: mm.right, bottom: mm.bottom },
-      head: [],
-      body: [[text]],
-      styles: { font: 'times', fontSize: 10, cellPadding: 2, lineWidth: 0, textColor: 20, halign: 'left', valign: 'top' },
-      columnStyles: { 0: { cellWidth: pageW - mm.left - mm.right } },
-      theme: 'plain',
-      didDrawPage: (data) => { drawBackground(doc); drawHeaderBand(doc); if (data.pageNumber === 1) drawFirstPageTitleBlock(doc); },
-    });
-    return (doc.lastAutoTable?.finalY ?? (y + 10)) + 6;
-  };
+const addSectionBlock = (doc, title, html, yStart) => {
+  let y = drawSectionTitle(doc, title, yStart);
+  const pageW = doc.internal.pageSize.getWidth();
+  const colW = pageW - mm.left - mm.right;
 
-  // -------------------- PDF generation --------------------
+  // 1) on parse le HTML Quill en lignes stylées
+  const lines = quillHtmlToRich(html);
+
+  // 2) on passe par autoTable pour la pagination & marges
+  autoTable(doc, {
+    startY: y + 1,
+    margin: { top: CONTENT_START_Y, left: mm.left, right: mm.right, bottom: mm.bottom },
+    head: [],
+    body: [['__RICH__']], // placeholder
+    styles: { font: 'times', fontSize: 10, cellPadding: 2, lineWidth: 0, textColor: 20, halign: 'left', valign: 'top' },
+    columnStyles: { 0: { cellWidth: colW } },
+    theme: 'plain',
+
+    didParseCell: (data) => {
+      if (data.section !== 'body' || data.column.index !== 0) return;
+      // Estime une hauteur minimale pour aider la pagination
+      const lineGap = 3.6; // doit matcher drawRichLines
+      const minH = 2 + (lines.length * lineGap) + 2;
+      data.cell.styles.minCellHeight = Math.max(data.cell.styles.minCellHeight || 0, minH);
+      // on vide le texte brut pour ne pas qu'il s'imprime
+      data.cell.text = [];
+    },
+
+    didDrawCell: (data) => {
+      if (data.section !== 'body' || data.column.index !== 0) return;
+      // on dessine notre contenu riche nous-mêmes
+      drawRichLines(data.doc, data.cell, lines, { fontSize: 10 });
+    },
+
+    didDrawPage: (data) => {
+      drawBackground(doc);
+      drawHeaderBand(doc);
+      if (data.pageNumber === 1) drawFirstPageTitleBlock(doc);
+    },
+  });
+
+  return (doc.lastAutoTable?.finalY ?? (y + 10)) + 6;
+};
+
+
+  /* -------------------- PDF generation -------------------- */
   const generatePDF = () => {
     const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
     doc.setFont('times', 'normal'); doc.setFontSize(10); doc.setLineHeightFactor(1.25);
@@ -535,7 +656,7 @@ const drawBackground = async (doc) => {
       return y;
     };
 
-    // prepare first page
+    // page 1
     drawBackground(doc);
     drawHeaderBand(doc);
     drawFirstPageTitleBlock(doc);
@@ -547,7 +668,7 @@ const drawBackground = async (doc) => {
     const w2 = Math.round(tableW * 0.44);
     const w3 = tableW - (w0 + w1 + w2);
 
-    // tiny table just to install a global didDrawPage
+    // installe didDrawPage global
     autoTable(doc, {
       head: [], body: [],
       margin: { top: CONTENT_START_Y, left: mm.left, right: mm.right, bottom: 8 },
@@ -679,7 +800,7 @@ const drawBackground = async (doc) => {
     doc.save(`Rapport_${safeClient}_${safeDate}.pdf`);
   };
 
-  // -------------------- Derived title --------------------
+  /* -------------------- Derived title -------------------- */
   const pageTitle = useMemo(() => {
     const parts = [];
     if (headerCode) parts.push(headerCode);
@@ -687,7 +808,7 @@ const drawBackground = async (doc) => {
     return (parts.length ? parts.join(' — ') : 'Générateur de rapport') + (headerVersion ? ` (v${headerVersion})` : '');
   }, [headerCode, headerTitle, headerVersion]);
 
-  // -------------------- UI --------------------
+  /* -------------------- UI -------------------- */
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6 font-sans">
       <h1 className="text-2xl font-bold text-center mb-2">{pageTitle}</h1>
@@ -718,7 +839,12 @@ const drawBackground = async (doc) => {
         <button className="px-3 py-2 border rounded h-[42px]" onClick={resetLogo}>↺ Réinitialiser le logo</button>
         <div className="flex items-center gap-3">
           <div className="border rounded w-40 h-16 flex items-center justify-center bg-white">
-            <img src={logoPreviewSrc} alt="Logo" className="max-h-14 max-w-36 object-contain" onError={() => { setLogoError('Logo introuvable ou corrompu.'); setLogoPreviewSrc('/gss-logo.png'); }} />
+            <img
+              src={logoPreviewSrc}
+              alt="Logo"
+              className="max-h-14 max-w-36 object-contain"
+              onError={() => { setLogoError('Logo introuvable ou corrompu.'); setLogoPreviewSrc('/gss-logo.png'); }}
+            />
           </div>
         </div>
       </div>
