@@ -1,0 +1,132 @@
+/* ====== Quill lists — reset & single-bullet per level (scoped) ====== */
+.quill-compact .ql-editor ul,
+.quill-compact .ql-editor ol {
+  padding-left: 0;
+  margin: 0.35rem 0 0.6rem;
+}
+
+/* base li */
+.quill-compact .ql-editor li {
+  list-style: none;            /* supprime les puces natives */
+  position: relative;
+  line-height: 1.6;
+  margin: 0.15rem 0;
+  padding-left: 1.4rem;        /* espace pour la puce */
+  color: #0b2540;
+}
+
+/* IMPORTANT: on efface toute puce par défaut */
+.quill-compact .ql-editor li::before {
+  content: none;
+}
+
+/* === Niveau 0 (pas de classe d'indentation) : • === */
+.quill-compact .ql-editor ul > li:not([class*="ql-indent-"])::before {
+  content: "•";
+  position: absolute;
+  left: 0;
+  top: 0.12rem;
+  font-size: 1rem;
+  color: #0b2540;
+}
+
+/* === Niveau 1 : ○ (doré) === */
+.quill-compact .ql-editor ul > li[class~="ql-indent-1"] {
+  margin-left: 1.3rem;
+}
+.quill-compact .ql-editor ul > li[class~="ql-indent-1"]::before {
+  content: "○";
+  position: absolute;
+  left: 0;
+  top: 0.12rem;
+  font-size: 1rem;
+  color: #d4a017;
+}
+
+/* === Niveau 2 : ▪ === */
+.quill-compact .ql-editor ul > li[class~="ql-indent-2"] {
+  margin-left: 2.6rem;
+}
+.quill-compact .ql-editor ul > li[class~="ql-indent-2"]::before {
+  content: "▪";
+  position: absolute;
+  left: 0;
+  top: 0.18rem;
+  font-size: 0.9rem;
+  color: #0b2540;
+}
+
+/* === Niveau 3 : – (tiret) === */
+.quill-compact .ql-editor ul > li[class~="ql-indent-3"] {
+  margin-left: 3.9rem;
+}
+.quill-compact .ql-editor ul > li[class~="ql-indent-3"]::before {
+  content: "–";
+  position: absolute;
+  left: 0.05rem;
+  top: 0.05rem;
+  font-weight: 700;
+  color: #666;
+}
+
+/* (optionnel) Niveau 4 : › */
+.quill-compact .ql-editor ul > li[class~="ql-indent-4"] {
+  margin-left: 5.2rem;
+}
+.quill-compact .ql-editor ul > li[class~="ql-indent-4"]::before {
+  content: "›";
+  position: absolute;
+  left: 0;
+  top: 0.05rem;
+  color: #999;
+}
+
+/* Ordered lists numérotées propres */
+.quill-compact .ql-editor ol {
+  counter-reset: qlol-0;
+}
+.quill-compact .ql-editor ol > li {
+  counter-increment: qlol-0;
+}
+.quill-compact .ql-editor ol > li::before {
+  content: counter(qlol-0) ".";
+  position: absolute;
+  left: 0;
+  top: 0.02rem;
+  font-weight: 700;
+  color: #0b2540;
+}
+.quill-compact .ql-editor ol > li[class~="ql-indent-1"] { margin-left: 1.6rem; }
+.quill-compact .ql-editor ol > li[class~="ql-indent-2"] { margin-left: 3.2rem; }
+.quill-compact .ql-editor ol > li[class~="ql-indent-3"] { margin-left: 4.8rem; }
+/* Hide Snow theme's built-in bullet/number UI so we can draw our own */
+.quill-compact .ql-editor .ql-ui,
+.quill-compact .ql-editor .ql-ui:before {
+  display: none !important;
+}
+
+/* Neutralize Snow's padding-based indents (we use margins instead) */
+.quill-compact .ql-editor .ql-indent-1:not(.ql-direction-rtl),
+.quill-compact .ql-editor .ql-indent-2:not(.ql-direction-rtl),
+.quill-compact .ql-editor .ql-indent-3:not(.ql-direction-rtl),
+.quill-compact .ql-editor .ql-indent-4:not(.ql-direction-rtl) {
+  padding-left: 0 !important;
+}
+/* Style PDF pour le rendu html2canvas / jsPDF */
+.quill-pdf {
+  font-family: "Times New Roman", Times, serif;   /* comme ton PDF */
+  color: #0b2540;
+  line-height: 1.6;
+}
+
+/* On garde tes puces custom si tu en as */
+.quill-pdf ul, .quill-pdf ol { margin: 0.35rem 0 0.6rem; }
+.quill-pdf li { margin: 0.15rem 0; }
+
+/* Optionnel: meilleure visibilité des liens & citations */
+.quill-pdf a { text-decoration: underline; }
+.quill-pdf blockquote {
+  border-left: 3px solid #d4a017;
+  margin: 0.4rem 0;
+  padding: 0.2rem 0.6rem;
+}
