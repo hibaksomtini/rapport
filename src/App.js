@@ -30,14 +30,77 @@ const rangeLabelFR = (arr) => {
   if (isContiguous) return `du ${fmtFR(unique[0])} au ${fmtFR(unique[unique.length - 1])}`;
   return unique.map(fmtFR).join(', ');
 };
+// --- Utils couleurs: parse CSS -> [r,g,b]
+const parseCssColorToRGB = (c) => {
+  if (!c || typeof c !== 'string') return null;
+  const s = c.trim().toLowerCase();
+
+  // hex #rgb or #rrggbb
+  if (/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(s)) {
+    let r, g, b;
+    if (s.length === 4) {
+      r = parseInt(s[1] + s[1], 16);
+      g = parseInt(s[2] + s[2], 16);
+      b = parseInt(s[3] + s[3], 16);
+    } else {
+      r = parseInt(s.slice(1, 3), 16);
+      g = parseInt(s.slice(3, 5), 16);
+      b = parseInt(s.slice(5, 7), 16);
+    }
+    return [r, g, b];
+  }
+
+  // rgb/rgba
+  const mRgb = s.match(/^rgba?\(([^)]+)\)$/i);
+  if (mRgb) {
+    const parts = mRgb[1].split(',').map(x => x.trim());
+    if (parts.length >= 3) {
+      const to255 = (x) => x.endsWith('%')
+        ? Math.round(parseFloat(x) * 2.55)
+        : Math.round(parseFloat(x));
+      const r = to255(parts[0]);
+      const g = to255(parts[1]);
+      const b = to255(parts[2]);
+      return [r, g, b];
+    }
+  }
+
+  // quelques noms CSS fréquents
+  const named = {
+    black: [0, 0, 0], white: [255, 255, 255], red: [255, 0, 0], green: [0, 128, 0], blue: [0, 0, 255],
+    yellow: [255, 255, 0], orange: [255, 165, 0], purple: [128, 0, 128], pink: [255, 192, 203],
+    gray: [128, 128, 128], grey: [128, 128, 128]
+  };
+  if (named[s]) return named[s];
+
+  return null; // inconnu
+};
+
+const safeSetTextColor = (doc, cssColor) => {
+  const rgb = parseCssColorToRGB(cssColor);
+  if (rgb) doc.setTextColor(rgb[0], rgb[1], rgb[2]);
+  else doc.setTextColor(20); // défaut
+};
+
+const safeSetFillColor = (doc, cssColor) => {
+  const rgb = parseCssColorToRGB(cssColor);
+  if (rgb) doc.setFillColor(rgb[0], rgb[1], rgb[2]);
+  else doc.setFillColor(255, 255, 0); // fallback pour highlight
+};
+
+const safeSetDrawColor = (doc, cssColor) => {
+  const rgb = parseCssColorToRGB(cssColor);
+  if (rgb) doc.setDrawColor(rgb[0], rgb[1], rgb[2]);
+  else doc.setDrawColor(20);
+};
 
 const normalizeProofs = (arr) =>
   Array.isArray(arr)
     ? arr.map((x) =>
-        typeof x === 'string'
-          ? { src: x, caption: '', pos: 'after' }
-          : { src: x.src, caption: x.caption || '', pos: x.pos === 'before' ? 'before' : 'after' }
-      )
+      typeof x === 'string'
+        ? { src: x, caption: '', pos: 'after' }
+        : { src: x.src, caption: x.caption || '', pos: x.pos === 'before' ? 'before' : 'after' }
+    )
     : [];
 
 const dedupeProofs = (arr) => {
@@ -135,6 +198,9 @@ const quillHtmlToRich = (html) => {
     if (tag === 'I' || tag === 'EM') s.italic = true;
     if (tag === 'U') s.underline = true;
     if (el.style && el.style.color) s.color = el.style.color;
+    if (el.style && el.style.backgroundColor) s.background = el.style.backgroundColor;
+    const bgClass = Array.from(el.classList || []).find(c => c.startsWith('ql-bg-'));
+    if (bgClass) s.background = bgClass.replace('ql-bg-', '');
     // Quill peut mettre la couleur via <span class="ql-color-red">…</span>
     const colorClass = Array.from(el.classList || []).find(c => c.startsWith('ql-color-'));
     if (colorClass) s.color = colorClass.replace('ql-color-', '');
@@ -174,7 +240,7 @@ const quillHtmlToRich = (html) => {
 
         // contenu inline du LI (sans les sous-listes)
         const only = liTextOnly(li);
-        Array.from(only.childNodes).forEach(n => walkInline(n, line, { bold:false, italic:false, underline:false, color:null }));
+        Array.from(only.childNodes).forEach(n => walkInline(n, line, { bold: false, italic: false, underline: false, color: null }));
 
         // sous-listes éventuelles
         li.querySelectorAll(':scope > ul, :scope > ol').forEach(sub => walkBlock(sub, indent + 1));
@@ -185,7 +251,7 @@ const quillHtmlToRich = (html) => {
     // Paragraphe/Div simple => une ligne
     if (tag === 'P' || tag === 'DIV') {
       const line = pushLine(baseIndent, null);
-      Array.from(node.childNodes).forEach(n => walkInline(n, line, { bold:false, italic:false, underline:false, color:null }));
+      Array.from(node.childNodes).forEach(n => walkInline(n, line, { bold: false, italic: false, underline: false, color: null }));
       return;
     }
 
@@ -201,9 +267,9 @@ const quillHtmlToRich = (html) => {
 /* Dessine des lignes riches dans une cellule autoTable */
 const drawRichLines = (doc, cell, lines, opts = {}) => {
   const fontSize = opts.fontSize ?? 10;
-  const lineGap = opts.lineGap ?? 3.6;     // ~ hauteur de ligne en mm avec FS=10
-  const bulletGap = opts.bulletGap ?? 4;   // espace après puce/numéro
-  const indentStep = opts.indentStep ?? 6; // mm par niveau
+  const lineGap = opts.lineGap ?? (fontSize * 1.35);   // interligne stable
+  const bulletGap = opts.bulletGap ?? 4;
+  const indentStep = opts.indentStep ?? 6;
 
   doc.setFontSize(fontSize);
   let y = cell.y + 2;
@@ -211,39 +277,74 @@ const drawRichLines = (doc, cell, lines, opts = {}) => {
   lines.forEach(line => {
     let x = cell.x + 1 + (line.indent * indentStep);
 
-    // dessine la puce/numéro si présent
+    // puce/numéro
     if (line.bullet) {
-      doc.setFont(undefined, 'normal');
-      doc.setTextColor(20);
+      doc.setFont('times', 'normal');
+      safeSetTextColor(doc, '#141414');
       doc.text(line.bullet, x, y);
       x += doc.getTextWidth(line.bullet) + bulletGap;
     }
 
-    // dessine les spans avec style
     line.spans.forEach(span => {
+      if (!span?.text) return;
+
       const style =
-        (span.bold ? 'bold' : 'normal') +
-        (span.italic ? 'italic' : '');
-      doc.setFont('times', style || 'normal');
-      if (span.underline) {
-        // jsPDF n'a pas d'underline natif → on trace un petit trait
-        const w = doc.getTextWidth(span.text);
-        doc.setTextColor(span.color || 20);
-        doc.text(span.text, x, y);
-        doc.setDrawColor(span.color ? 0 : 20);
-        doc.setLineWidth(0.2);
-        doc.line(x, y + 0.6, x + w, y + 0.6);
-        x += w;
-      } else {
-        doc.setTextColor(span.color || 20);
-        doc.text(span.text, x, y);
-        x += doc.getTextWidth(span.text);
+        (span.bold && span.italic) ? 'bolditalic' :
+          (span.bold ? 'bold' : (span.italic ? 'italic' : 'normal'));
+      doc.setFont('times', style);
+
+      const text = span.text;
+      const textW = doc.getTextWidth(text);
+
+      // === HIGHLIGHT propre (uniquement sur le texte non-blanc) ===
+      if (span.background) {
+        const mLeft = text.match(/^(\s*)/);
+        const mRight = text.match(/(\s*)$/);
+        const leftSpaces = mLeft ? mLeft[1] : '';
+        const rightSpaces = mRight ? mRight[1] : '';
+        const core = text.slice(leftSpaces.length, text.length - rightSpaces.length);
+
+        if (core.trim().length) {
+          const leftW = leftSpaces ? doc.getTextWidth(leftSpaces) : 0;
+          let hx = x + leftW;
+          let hw = doc.getTextWidth(core);
+
+          // bornes de la cellule
+          const minX = cell.x + 1;
+          const maxX = cell.x + cell.width - 1;
+          if (hx < minX) { hw -= (minX - hx); hx = minX; }
+          if (hx + hw > maxX) { hw = Math.max(0, maxX - hx); }
+
+          if (hw > 0) {
+            // hauteur/position du rectangle alignée à la ligne
+            const ascent = fontSize * 0.78;           // mieux centré visuellement
+            const rectH = fontSize * 0.48;           // épaisseur du surlignage
+            const rectY = y - ascent + (fontSize * 0.35); // pas trop haut
+
+            safeSetFillColor(doc, span.background);
+            doc.rect(hx - 0.2, rectY, hw + 0.4, rectH, 'F');
+          }
+        }
       }
+
+      // texte
+      safeSetTextColor(doc, span.color || '#141414');
+      doc.text(text, x, y);
+
+      // souligné
+      if (span.underline) {
+        safeSetDrawColor(doc, span.color || '#141414');
+        doc.setLineWidth(0.25);
+        doc.line(x, y + 0.6, x + textW, y + 0.6);
+      }
+
+      x += textW;
     });
 
     y += lineGap;
   });
 };
+
 
 export default function App() {
   /* -------------------- Header -------------------- */
@@ -261,7 +362,6 @@ export default function App() {
   const [controleur, setControleur] = useState('');
 
   /* -------------------- Options PDF/UI -------------------- */
-  const [forcePageBreakBetweenSites] = useState(false); // conservé pour compatibilité
   const [minBlockMM] = useState(28);
 
   /* -------------------- Dates -------------------- */
@@ -356,19 +456,6 @@ export default function App() {
       })
       .catch(() => setBgTransparentUrl(null));
   }, []);
-
-  const drawBackground = (doc) => {
-    if (!bgTransparentUrl) return;
-    try {
-      const pageW = doc.internal.pageSize.getWidth();
-      const pageH = doc.internal.pageSize.getHeight();
-      const imgW = pageW * 0.95;
-      const imgH = imgW * 0.5625; // ratio fallback
-      const x = (pageW - imgW) / 2;
-      const y = (pageH - imgH) / 2;
-      doc.addImage(bgTransparentUrl, 'PNG', x, y, imgW, imgH, undefined, 'FAST');
-    } catch { /* ignore */ }
-  };
 
   /* -------------------- Site/Points helpers -------------------- */
   const addSite = () =>
@@ -535,17 +622,67 @@ export default function App() {
     r.readAsText(f);
   };
 
-  /* -------------------- PDF helpers -------------------- */
+  /* -------------------- PDF generation -------------------- */
+const generatePDF = () => {
+  // ---------- jsPDF init ----------
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  doc.addFont('times', 'bold', 'timesbd');
+  doc.addFont('times', 'italic', 'timesi');
+  doc.addFont('times', 'bolditalic', 'timesbi');
+  doc.setFont('times', 'normal');
+  doc.setFontSize(10);
+  doc.setLineHeightFactor(1.25);
+
+  // ---------- Layout constants (scoped) ----------
   const mm = { left: 15, right: 15, top: 18, bottom: 18 };
   const CONTENT_START_Y = 50;
+  const MIN_BLOCK = Number(minBlockMM) > 0 ? Number(minBlockMM) : 28;
 
-  const drawHeaderBand = (doc) => {
+  // ---------- Tracking last real table on *this* page ----------
+  let lastTablePage = null;
+  let lastTableFinalY = null;
+
+  const updateLastTableCursor = () => {
+    lastTablePage   = doc.internal.getCurrentPageInfo().pageNumber;
+    lastTableFinalY = doc.lastAutoTable?.finalY ?? null;
+  };
+
+  const lastTableYOnThisPage = () => {
+    const p = doc.internal.getCurrentPageInfo().pageNumber;
+    return (lastTablePage === p && lastTableFinalY != null) ? lastTableFinalY : null;
+  };
+
+  // bump cursor below last table on the same page (+gap)
+  const bumpY = (y, gap = 6) => {
+    const lt = lastTableYOnThisPage();
+    const base = (lt != null) ? Math.max(y, lt) : y;
+    return base + gap;
+  };
+
+  // add page if the block of 'needed' height would overflow
+  const ensureSpace = (y, needed) => {
+    const pageH = doc.internal.pageSize.getHeight();
+    const usableH = pageH - mm.bottom;
+    if (y + needed > usableH) {
+      doc.addPage();
+      return CONTENT_START_Y;
+    }
+    return y;
+  };
+
+  // minimum block guard used before some titles
+  const preflightSpace = (y) => ensureSpace(y, MIN_BLOCK);
+
+  // ---------- Page decorations (scoped) ----------
+  const drawHeaderBand = () => {
     const pageW = doc.internal.pageSize.getWidth();
     doc.setDrawColor(212, 160, 23);
     doc.setLineWidth(1.2);
     doc.line(mm.left, 10, pageW - mm.right, 10);
     doc.line(mm.left, 24, pageW - mm.right, 24);
-    if (logoDataUrl) { try { doc.addImage(logoDataUrl, undefined, mm.left, 11, 22, 10, undefined, 'FAST'); } catch { /* ignore */ } }
+    if (logoDataUrl) {
+      try { doc.addImage(logoDataUrl, undefined, mm.left, 11, 22, 10, undefined, 'FAST'); } catch {}
+    }
     const rx = pageW - mm.right;
     doc.setFont('times', 'bold');
     doc.setFontSize(10);
@@ -554,10 +691,24 @@ export default function App() {
     doc.text(`Version : ${headerVersion || '—'}`, rx, 19, { align: 'right' });
   };
 
-  const drawFirstPageTitleBlock = (doc) => {
+  const drawBackground = () => {
+    if (!bgTransparentUrl) return;
+    try {
+      const pageW = doc.internal.pageSize.getWidth();
+      const pageH = doc.internal.pageSize.getHeight();
+      const imgW = pageW * 0.95;
+      const imgH = imgW * 0.5625;
+      const x = (pageW - imgW) / 2;
+      const y = (pageH - imgH) / 2;
+      doc.addImage(bgTransparentUrl, 'PNG', x, y, imgW, imgH, undefined, 'FAST');
+    } catch {}
+  };
+
+  const drawFirstPageTitle = () => {
     const pageW = doc.internal.pageSize.getWidth();
     const boxX = mm.left; const boxW = pageW - mm.left - mm.right;
-    doc.setDrawColor(0); doc.setLineWidth(0.3); doc.rect(boxX, 26.5, boxW, 8);
+    doc.setDrawColor(0); doc.setLineWidth(0.3);
+    doc.rect(boxX, 26.5, boxW, 8);
     doc.setFont('times', 'bold'); doc.setFontSize(13);
     doc.text(headerTitle || 'Rapport de contrôle inopiné', pageW / 2, 31.5, { align: 'center' });
 
@@ -567,238 +718,241 @@ export default function App() {
 
     doc.setFont('times', 'normal');
     const clientLines = doc.splitTextToSize((client || '—').toString(), Math.max(20, (pageW / 2) - (mm.left + 20)));
-    const dateLines = doc.splitTextToSize(rangeLabelFR(datesControle) || '—', Math.max(20, (pageW - mm.right) - (pageW / 2 + 22)));
+    const dateLines   = doc.splitTextToSize(rangeLabelFR(datesControle) || '—', Math.max(20, (pageW - mm.right) - (pageW / 2 + 22)));
     doc.text(clientLines, mm.left + 18, 42);
-    doc.text(dateLines, pageW / 2 + 22, 42);
+    doc.text(dateLines,  pageW / 2 + 22, 42);
   };
 
-  const drawSectionTitle = (doc, title, yStart) => {
+  const drawSectionTitle = (title, yStart) => {
     const pageW = doc.internal.pageSize.getWidth();
-    const pageH = doc.internal.pageSize.getHeight();
-    const usableH = pageH - mm.bottom;
-    let y = yStart; const boxH = 8;
-    if (y + boxH + 5 > usableH) { drawBackground(doc); drawHeaderBand(doc); y = CONTENT_START_Y; }
+    const boxH = 8;
+    let y = ensureSpace(bumpY(yStart, 6), boxH + 5);
     const boxX = mm.left; const boxW = pageW - mm.left - mm.right;
-    doc.setFillColor(255, 247, 225); doc.setDrawColor(0); doc.setLineWidth(0.3); doc.roundedRect(boxX, y, boxW, boxH, 1.2, 1.2, 'FD');
-    doc.setFont('times', 'bold'); doc.setFontSize(12); doc.setTextColor(0); doc.text(title, mm.left + 4, y + 5.4);
+    doc.setFillColor(255, 247, 225);
+    doc.setDrawColor(0);
+    doc.setLineWidth(0.3);
+    doc.roundedRect(boxX, y, boxW, boxH, 1.2, 1.2, 'FD');
+    doc.setFont('times', 'bold'); doc.setFontSize(12); doc.setTextColor(0);
+    doc.text(title, mm.left + 4, y + 5.4);
     return y + boxH + 3;
   };
 
-  const drawSiteSubtitle = (doc, siteName, yStart) => {
+  const drawSiteSubtitle = (siteName, yStart) => {
     const pageW = doc.internal.pageSize.getWidth();
-    const pageH = doc.internal.pageSize.getHeight();
-    const usableH = pageH - mm.bottom;
-    let y = yStart; const boxH = 7;
-    if (y + boxH + 3 > usableH) { drawBackground(doc); drawHeaderBand(doc); y = CONTENT_START_Y; }
+    const boxH = 7;
+    let y = ensureSpace(bumpY(yStart, 4), boxH + 3);
     const boxX = mm.left; const boxW = pageW - mm.left - mm.right;
-    doc.setFillColor(245, 245, 245); doc.setDrawColor(180); doc.setLineWidth(0.2); doc.roundedRect(boxX, y, boxW, boxH, 1, 1, 'FD');
+    doc.setFillColor(245, 245, 245); doc.setDrawColor(180); doc.setLineWidth(0.2);
+    doc.roundedRect(boxX, y, boxW, boxH, 1, 1, 'FD');
     doc.setFont('times', 'bold'); doc.setFontSize(11);
     const label = siteName?.trim() ? `Site : ${siteName.trim()}` : 'Site : —';
     doc.text(label, mm.left + 4, y + 4.8);
     return y + boxH + 2;
   };
 
-const addSectionBlock = (doc, title, html, yStart) => {
-  let y = drawSectionTitle(doc, title, yStart);
-  const pageW = doc.internal.pageSize.getWidth();
-  const colW = pageW - mm.left - mm.right;
-
-  // 1) on parse le HTML Quill en lignes stylées
-  const lines = quillHtmlToRich(html);
-
-  // 2) on passe par autoTable pour la pagination & marges
+  // ---------- Install one didDrawPage (do NOT update cursor here) ----------
   autoTable(doc, {
-    startY: y + 1,
-    margin: { top: CONTENT_START_Y, left: mm.left, right: mm.right, bottom: mm.bottom },
-    head: [],
-    body: [['__RICH__']], // placeholder
-    styles: { font: 'times', fontSize: 10, cellPadding: 2, lineWidth: 0, textColor: 20, halign: 'left', valign: 'top' },
-    columnStyles: { 0: { cellWidth: colW } },
-    theme: 'plain',
-
-    didParseCell: (data) => {
-      if (data.section !== 'body' || data.column.index !== 0) return;
-      // Estime une hauteur minimale pour aider la pagination
-      const lineGap = 3.6; // doit matcher drawRichLines
-      const minH = 2 + (lines.length * lineGap) + 2;
-      data.cell.styles.minCellHeight = Math.max(data.cell.styles.minCellHeight || 0, minH);
-      // on vide le texte brut pour ne pas qu'il s'imprime
-      data.cell.text = [];
-    },
-
-    didDrawCell: (data) => {
-      if (data.section !== 'body' || data.column.index !== 0) return;
-      // on dessine notre contenu riche nous-mêmes
-      drawRichLines(data.doc, data.cell, lines, { fontSize: 10 });
-    },
-
+    head: [], body: [],
+    margin: { top: CONTENT_START_Y, left: mm.left, right: mm.right, bottom: 8 },
     didDrawPage: (data) => {
-      drawBackground(doc);
-      drawHeaderBand(doc);
-      if (data.pageNumber === 1) drawFirstPageTitleBlock(doc);
+      drawBackground();
+      drawHeaderBand();
+      if (data.pageNumber === 1) drawFirstPageTitle();
     },
   });
 
-  return (doc.lastAutoTable?.finalY ?? (y + 10)) + 6;
-};
+  // ---------- Page 1 visual header ----------
+  drawBackground();
+  drawHeaderBand();
+  drawFirstPageTitle();
 
+  // ---------- 1. Points de contrôle ----------
+  let y = CONTENT_START_Y - 4;
+  y = drawSectionTitle('1. Points de contrôle', y);
 
-  /* -------------------- PDF generation -------------------- */
-  const generatePDF = () => {
-    const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-    doc.setFont('times', 'normal'); doc.setFontSize(10); doc.setLineHeightFactor(1.25);
+  const pageW = doc.internal.pageSize.getWidth();
+  const tableW = pageW - mm.left - mm.right;
+  const w0 = Math.round(tableW * 0.20);
+  const w1 = Math.round(tableW * 0.20);
+  const w2 = Math.round(tableW * 0.44);
+  const w3 = tableW - (w0 + w1 + w2);
 
-    const preflightSpace = (y) => {
-      const minBlock = Number(minBlockMM) > 0 ? Number(minBlockMM) : 28;
-      const pageH = doc.internal.pageSize.getHeight();
-      const usableH = pageH - mm.bottom;
-      if (y + minBlock > usableH) { drawBackground(doc); drawHeaderBand(doc); return CONTENT_START_Y; }
-      return y;
-    };
+  const renderSiteTable = (site) => {
+    y = preflightSpace(y);
+    y = drawSiteSubtitle(site.name, y);
 
-    // page 1
-    drawBackground(doc);
-    drawHeaderBand(doc);
-    drawFirstPageTitleBlock(doc);
+    const bodyRows = (site.points || []).map((p) => [
+      p.point || '', p.nonConformite || '', (p.preuvesText || '').trim(), p.action || ''
+    ]);
 
-    const pageW = doc.internal.pageSize.getWidth();
-    const tableW = pageW - mm.left - mm.right;
-    const w0 = Math.round(tableW * 0.20);
-    const w1 = Math.round(tableW * 0.20);
-    const w2 = Math.round(tableW * 0.44);
-    const w3 = tableW - (w0 + w1 + w2);
-
-    // installe didDrawPage global
     autoTable(doc, {
-      head: [], body: [],
-      margin: { top: CONTENT_START_Y, left: mm.left, right: mm.right, bottom: 8 },
-      didDrawPage: (data) => { drawBackground(doc); drawHeaderBand(doc); if (data.pageNumber === 1) drawFirstPageTitleBlock(doc); },
+      startY: ensureSpace(y + 2, 8),
+      margin: { top: CONTENT_START_Y, left: mm.left, right: mm.right, bottom: mm.bottom },
+      head: [['Point vérifié', 'Non-conformité', 'Preuves / Observations / Photos', 'Action immédiate']],
+      body: bodyRows,
+      styles: { font: 'times', fontSize: 10, cellPadding: 2, lineWidth: 0.1, lineColor: [180,180,180], halign: 'center', valign: 'top', overflow: 'linebreak' },
+      headStyles: { fontStyle: 'bold', fontSize: 11, fillColor: [235,235,235], textColor: 20, halign: 'center', valign: 'middle' },
+      alternateRowStyles: { fillColor: [248,248,248] },
+      columnStyles: { 0: { cellWidth: w0 }, 1: { cellWidth: w1 }, 2: { cellWidth: w2 }, 3: { cellWidth: w3 } },
+      theme: 'grid',
+
+      // --- Height prediction for text + images + captions ---
+      didParseCell: (data) => {
+        if (data.section !== 'body' || data.column.index !== 2) return;
+        const idxRow = data.row.index;
+        const point = site.points?.[idxRow] || {};
+        const text = (point.preuvesText || '').trim();
+
+        // text height
+        const textLines = data.doc.splitTextToSize(text, Math.max(10, data.cell.width - 2));
+        const dims = data.doc.getTextDimensions(Array.isArray(textLines) ? textLines.join('\n') : (text || ' '));
+        const textHeight = (dims.h || 0) / data.doc.internal.scaleFactor;
+
+        // images + captions
+        const IMG_W = 40, IMG_H = 28, CAPTION_FONT = 9, CAPTION_GAP = 1.5, ITEM_GAP = 4;
+        const proofs = (Array.isArray(point.preuvesImages) ? point.preuvesImages : [])
+          .map((x) => typeof x === 'string'
+            ? { src: x, caption: '', pos: 'after' }
+            : { src: x.src, caption: x.caption || '', pos: x.pos === 'before' ? 'before' : 'after' });
+
+        let imagesBlockH = 0;
+        proofs.forEach((it, i) => {
+          const capLines = data.doc.splitTextToSize(it.caption || '', Math.max(10, data.cell.width - 2));
+          const capDims  = data.doc.getTextDimensions(Array.isArray(capLines) ? capLines.join('\n') : (it.caption || ' '));
+          const capH = ((it.caption ? capDims.h : 0) || 0) / data.doc.internal.scaleFactor;
+          const before = it.pos === 'before' ? (capH ? capH + CAPTION_GAP : 0) : 0;
+          const after  = it.pos === 'after'  ? (capH ? CAPTION_GAP + capH : 0) : 0;
+          imagesBlockH += before + IMG_H + after;
+          if (i < proofs.length - 1) imagesBlockH += ITEM_GAP;
+        });
+
+        const totalH = textHeight + (proofs.length ? 2 : 0) + imagesBlockH + 6;
+        data.cell.styles.minCellHeight = Math.max(data.cell.styles.minCellHeight || 0, totalH);
+        data.cell._gssImgData = { proofs, textHeight, IMG_W, IMG_H, CAPTION_FONT, CAPTION_GAP, ITEM_GAP };
+      },
+
+      // --- Actual drawing of images + centered captions ---
+      didDrawCell: (data) => {
+        if (data.section !== 'body' || data.column.index !== 2) return;
+        const meta = data.cell._gssImgData || {};
+        const { proofs, textHeight, IMG_W, IMG_H, CAPTION_FONT, CAPTION_GAP, ITEM_GAP } = meta;
+        if (!proofs?.length) return;
+
+        let yCursor = data.cell.y + 2 + (textHeight || 0) + 2;
+        const capWidth = Math.max(10, data.cell.width - 2);
+        const centerX = data.cell.x + (data.cell.width / 2);
+
+        proofs.forEach((it, i) => {
+          try {
+            // caption BEFORE image (centered)
+            if (it.pos === 'before' && it.caption) {
+              data.doc.setFontSize(CAPTION_FONT);
+              const lines = data.doc.splitTextToSize(it.caption, capWidth);
+              const joined = Array.isArray(lines) ? lines.join('\n') : it.caption;
+              const textW = data.doc.getTextWidth(joined);
+              const startX = centerX - (textW / 2);
+              data.doc.text(lines, startX, yCursor, { align: 'left' });
+              const capDims = data.doc.getTextDimensions(joined);
+              yCursor += (capDims.h || 0) / data.doc.internal.scaleFactor + CAPTION_GAP;
+              data.doc.setFontSize(10);
+            }
+
+            // image (centered in the cell)
+            const x = data.cell.x + (data.cell.width - IMG_W) / 2;
+            data.doc.addImage(it.src, undefined, x, yCursor, IMG_W, IMG_H, undefined, 'FAST');
+            yCursor += IMG_H;
+
+            // caption AFTER image (centered)
+            if (it.pos === 'after' && it.caption) {
+              yCursor += CAPTION_GAP;
+              data.doc.setFontSize(CAPTION_FONT);
+              const lines = data.doc.splitTextToSize(it.caption, capWidth);
+              const joined = Array.isArray(lines) ? lines.join('\n') : it.caption;
+              const textW = data.doc.getTextWidth(joined);
+              const startX = centerX - (textW / 2);
+              data.doc.text(lines, startX, yCursor, { align: 'left' });
+              const capDims = data.doc.getTextDimensions(joined);
+              yCursor += (capDims.h || 0) / data.doc.internal.scaleFactor;
+              data.doc.setFontSize(10);
+            }
+
+            if (i < proofs.length - 1) yCursor += ITEM_GAP;
+          } catch {}
+        });
+      },
     });
 
-    let y = CONTENT_START_Y - 4;
-    y = drawSectionTitle(doc, '1. Points de contrôle', y);
-
-    const renderSiteTable = (site, idx) => {
-      if (forcePageBreakBetweenSites && idx > 0) { drawBackground(doc); drawHeaderBand(doc); y = CONTENT_START_Y; }
-      y = preflightSpace(y);
-      y = drawSiteSubtitle(doc, site.name, y);
-
-      const bodyRows = (site.points || []).map((p) => [p.point || '', p.nonConformite || '', (p.preuvesText || '').trim(), p.action || '']);
-
-      autoTable(doc, {
-        startY: y + 2,
-        margin: { top: CONTENT_START_Y, left: mm.left, right: mm.right, bottom: mm.bottom },
-        head: [['Point vérifié', 'Non-conformité', 'Preuves / Observations / Photos', 'Action immédiate']],
-        body: bodyRows,
-        styles: { font: 'times', fontSize: 10, cellPadding: 2, lineWidth: 0.1, lineColor: [180, 180, 180], halign: 'center', valign: 'top', overflow: 'linebreak' },
-        headStyles: { fontStyle: 'bold', fontSize: 11, fillColor: [235, 235, 235], textColor: 20, halign: 'center', valign: 'middle' },
-        alternateRowStyles: { fillColor: [248, 248, 248] },
-        columnStyles: { 0: { cellWidth: w0 }, 1: { cellWidth: w1 }, 2: { cellWidth: w2 }, 3: { cellWidth: w3 } },
-        theme: 'grid',
-
-        didParseCell: (data) => {
-          const { section, row, column, cell } = data;
-          if (section === 'head' && column.index === 2) {
-            cell.styles.fontSize = 10; cell.styles.cellPadding = 2;
-          }
-          if (section === 'body' && column.index === 2) {
-            const idxRow = row.index;
-            const point = site.points?.[idxRow] || {};
-            const text = (point.preuvesText || '').trim();
-            const textLines = data.doc.splitTextToSize(text, Math.max(10, cell.width - 2));
-            const textForMeasure = Array.isArray(textLines) ? textLines.join('\n') : (text || ' ');
-            const dims = data.doc.getTextDimensions(textForMeasure);
-            const textHeightMM = (dims.h || 0) / data.doc.internal.scaleFactor;
-
-            const proofs = (Array.isArray(point.preuvesImages) ? point.preuvesImages : []).map((x) =>
-              typeof x === 'string' ? { src: x, caption: '', pos: 'after' } : { src: x.src, caption: x.caption || '', pos: x.pos === 'before' ? 'before' : 'after' }
-            );
-
-            const IMG_W = 40; const IMG_H = 28; const CAPTION_FONT = 9; const CAPTION_GAP = 1.5; const ITEM_GAP = 4;
-            let imagesBlockHeight = 0;
-            proofs.forEach((it, i) => {
-              const capLines = data.doc.splitTextToSize(it.caption || '', Math.max(10, cell.width - 2));
-              const capDims = data.doc.getTextDimensions(Array.isArray(capLines) ? capLines.join('\n') : (it.caption || ' '));
-              const capH = ((it.caption ? capDims.h : 0) || 0) / data.doc.internal.scaleFactor;
-              const beforeH = it.pos === 'before' ? (capH ? capH + CAPTION_GAP : 0) : 0;
-              const afterH = it.pos === 'after' ? (capH ? CAPTION_GAP + capH : 0) : 0;
-              imagesBlockHeight += beforeH + IMG_H + afterH;
-              if (i < proofs.length - 1) imagesBlockHeight += ITEM_GAP;
-            });
-
-            const needed = textHeightMM + (proofs.length ? 2 : 0) + imagesBlockHeight + 4;
-            cell.styles.minCellHeight = Math.max(cell.styles.minCellHeight || 0, needed);
-            cell._gssImgDims = { IMG_W, IMG_H, textHeightMM, CAPTION_FONT, CAPTION_GAP, ITEM_GAP };
-          }
-        },
-
-        didDrawCell: (data) => {
-          if (data.section !== 'body' || data.column.index !== 2) return;
-          const idxRow = data.row.index;
-          const point = site.points?.[idxRow] || {};
-          const proofs = (Array.isArray(point.preuvesImages) ? point.preuvesImages : []).map((x) =>
-            typeof x === 'string' ? { src: x, caption: '', pos: 'after' } : { src: x.src, caption: x.caption || '', pos: x.pos === 'before' ? 'before' : 'after' }
-          );
-          if (!proofs.length) return;
-          const d = data.cell._gssImgDims || { IMG_W: 40, IMG_H: 28, textHeightMM: 8, CAPTION_FONT: 9, CAPTION_GAP: 1.5, ITEM_GAP: 4 };
-          let yCursor = data.cell.y + 2 + d.textHeightMM + 2;
-          const capWidth = Math.max(10, data.cell.width - 2);
-          proofs.forEach((it, i) => {
-            try {
-              if (it.pos === 'before' && it.caption) {
-                data.doc.setFontSize(d.CAPTION_FONT);
-                const lines = data.doc.splitTextToSize(it.caption, capWidth);
-                data.doc.text(lines, data.cell.x + 1, yCursor);
-                const dims = data.doc.getTextDimensions(Array.isArray(lines) ? lines.join('\n') : it.caption);
-                yCursor += (dims.h || 0) / data.doc.internal.scaleFactor + d.CAPTION_GAP;
-                data.doc.setFontSize(10);
-              }
-              const x = data.cell.x + (data.cell.width - d.IMG_W) / 2;
-              data.doc.addImage(it.src, undefined, x, yCursor, d.IMG_W, d.IMG_H, undefined, 'FAST');
-              yCursor += d.IMG_H;
-              if (it.pos === 'after' && it.caption) {
-                yCursor += d.CAPTION_GAP;
-                data.doc.setFontSize(d.CAPTION_FONT);
-                const lines = data.doc.splitTextToSize(it.caption, capWidth);
-                data.doc.text(lines, data.cell.x + 1, yCursor);
-                const dims = data.doc.getTextDimensions(Array.isArray(lines) ? lines.join('\n') : it.caption);
-                yCursor += (dims.h || 0) / data.doc.internal.scaleFactor;
-                data.doc.setFontSize(10);
-              }
-              if (i < proofs.length - 1) yCursor += d.ITEM_GAP;
-            } catch { /* ignore bad images */ }
-          });
-        },
-
-        didDrawPage: (data) => { drawBackground(doc); drawHeaderBand(doc); if (data.pageNumber === 1) drawFirstPageTitleBlock(doc); },
-      });
-
-      y = (doc.lastAutoTable?.finalY ?? y) + 1;
-    };
-
-    (sites || []).forEach((s, i) => renderSiteTable(s, i));
-
-    // Section 2 & 3
-    y = addSectionBlock(doc, '2. Constatations générales', constatations, y);
-    y = addSectionBlock(doc, '3. Recommandations globales', recommandations, y);
-
-    // Section 4 – Signature
-    const pageH = doc.internal.pageSize.getHeight();
-    const usableH = pageH - mm.bottom; const boxH = 8;
-    if (y + boxH + 25 > usableH) { drawBackground(doc); drawHeaderBand(doc); y = CONTENT_START_Y; }
-    const pageW2 = doc.internal.pageSize.getWidth();
-    const boxX = mm.left; const boxW = pageW2 - mm.left - mm.right;
-    doc.setFillColor(255, 247, 225); doc.setDrawColor(0); doc.setLineWidth(0.3); doc.roundedRect(boxX, y, boxW, boxH, 1.2, 1.2, 'FD');
-    doc.setFont('times', 'bold'); doc.setFontSize(12); doc.setTextColor(0); doc.text('4. Signature', mm.left + 4, y + 5.4);
-    y += boxH + 8; doc.setFont('times', 'bold'); doc.setFontSize(11); doc.text('Contrôleur :', mm.left + 4, y);
-    const ctrlText = controleur ? controleur : '...............................................................';
-    doc.setFont('times', 'normal'); doc.text(ctrlText, mm.left + 36, y);
-
-    const safeClient = (client || 'Client').replace(/[^\w\d-]+/g, '_');
-    const label = rangeLabelFR(datesControle).replaceAll(' ', '_').replace(/[^\w\d-_/]+/g, '');
-    const safeDate = label || 'Date';
-    doc.save(`Rapport_${safeClient}_${safeDate}.pdf`);
+    // after a real table, update cursor tracking
+    updateLastTableCursor();
+    y = bumpY(y, 4);
   };
+
+  (sites || []).forEach(renderSiteTable);
+
+  // ---------- 2 & 3. Rich text sections (Quill → drawRichLines) ----------
+  const addSectionBlock = (title, html, yStart) => {
+    // Bandeau de titre
+    let yTitleBottom = drawSectionTitle(title, ensureSpace(bumpY(yStart, 8), 12));
+
+    const pageW = doc.internal.pageSize.getWidth();
+    const colW  = pageW - mm.left - mm.right;
+    const lines = quillHtmlToRich(html);
+
+    autoTable(doc, {
+      startY: ensureSpace(yTitleBottom + 1, 8),
+      margin: { top: CONTENT_START_Y, left: mm.left, right: mm.right, bottom: mm.bottom },
+      head: [],
+      body: [['__RICH__']],
+      styles: { font: 'times', fontSize: 10, cellPadding: 2, lineWidth: 0, textColor: 20, halign: 'left', valign: 'top' },
+      columnStyles: { 0: { cellWidth: colW } },
+      theme: 'plain',
+      didParseCell: (data) => {
+        if (data.section !== 'body' || data.column.index !== 0) return;
+        // hauteur estimée pour pagination
+        const lineGap = 3.6;
+        const minH = 2 + (lines.length * lineGap) + 2;
+        data.cell.styles.minCellHeight = Math.max(data.cell.styles.minCellHeight || 0, minH);
+        data.cell.text = []; // on laisse drawRichLines peindre
+      },
+      didDrawCell: (data) => {
+        if (data.section !== 'body' || data.column.index !== 0) return;
+        drawRichLines(data.doc, data.cell, lines, { fontSize: 10 });
+      },
+    });
+
+    // mémoriser fin réelle du tableau (y compris pagination)
+    updateLastTableCursor();
+    // retourner un y après le tableau (pas le y du titre)
+    return bumpY(doc.lastAutoTable?.finalY ?? yTitleBottom, 8);
+  };
+
+  y = addSectionBlock('2. Constatations générales', constatations, y);
+  y = addSectionBlock('3. Recommandations globales', recommandations, y);
+
+  // ---------- 4. Signature ----------
+  const sigTitleH = 8;
+  const sigNeeded = sigTitleH + 25;
+  y = bumpY(y, 10);
+  y = ensureSpace(y, sigNeeded);
+
+  const pageW2 = doc.internal.pageSize.getWidth();
+  const boxX = mm.left; const boxW = pageW2 - mm.left - mm.right;
+  doc.setFillColor(255, 247, 225); doc.setDrawColor(0); doc.setLineWidth(0.3);
+  doc.roundedRect(boxX, y, boxW, sigTitleH, 1.2, 1.2, 'FD');
+  doc.setFont('times', 'bold'); doc.setFontSize(12); doc.setTextColor(0);
+  doc.text('4. Signature', mm.left + 4, y + 5.4);
+  y += sigTitleH + 8;
+  doc.setFont('times', 'bold'); doc.setFontSize(11); doc.text('Contrôleur :', mm.left + 4, y);
+  const ctrlText = controleur ? controleur : '...............................................................';
+  doc.setFont('times', 'normal'); doc.text(ctrlText, mm.left + 36, y);
+
+  // ---------- Save ----------
+  const safeClient = (client || 'Client').replace(/[^\w\d-]+/g, '_');
+  const label = rangeLabelFR(datesControle).replaceAll(' ', '_').replace(/[^\w\d-_/]+/g, '');
+  const safeDate = label || 'Date';
+  doc.save(`Rapport_${safeClient}_${safeDate}.pdf`);
+};
+
 
   /* -------------------- Derived title -------------------- */
   const pageTitle = useMemo(() => {
